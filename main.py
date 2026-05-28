@@ -98,7 +98,7 @@ selected_us = st.sidebar.multiselect(
 # 추가 사용자 정의 티커
 custom_input = st.sidebar.text_input("➕ 추가할 티커 직접 입력 (쉼표 구분)", placeholder="예: TSMC의 TSM, 카카오의 035720.KS")
 
-# 분석용 무위험 수익률 (샤프 지수 계산용, 예: 예금 금리나 국채 금리 수준)
+# 분석용 무위험 수익률 (샤프 지수 계산용)
 rf_rate = st.sidebar.number_input("💵 무위험 수익률 설정 (%)", min_value=0.0, max_value=10.0, value=3.0, step=0.1)
 
 # 선택된 모든 티커 취합
@@ -115,18 +115,16 @@ all_selected_tickers = tickers_kr + tickers_us + tickers_custom
 @st.cache_data(ttl=3600)
 def fetch_stock_data(tickers, start, end):
     if not tickers:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
     try:
         # 야후 파이낸스 일괄 다운로드
         data = yf.download(tickers, start=start, end=end)
         
-        # 다운로드된 데이터에서 'Close'(종가) 및 'Volume'(거래량)만 추출
+        # 다운로드된 데이터에서 'Close'(종가) 및 'Volume'(거래량) 추출
         if len(tickers) == 1:
-            # 단일 종목일 경우 컬럼 구조 처리
             df_close = pd.DataFrame({tickers[0]: data['Close']})
             df_volume = pd.DataFrame({tickers[0]: data['Volume']})
         else:
-            # 다중 종목일 경우 MultiIndex 해제하여 추출
             df_close = data['Close']
             df_volume = data['Volume']
             
@@ -145,38 +143,29 @@ if all_selected_tickers:
         df_prices = df_prices.ffill().bfill()
         df_volumes = df_volumes.ffill().bfill()
         
-        # 5. 핵심 재무 통계 지표 계산 함수들
-        # 1) 일일 수익률
+        # 5. 핵심 재무 통계 지표 계산
         df_returns = df_prices.pct_change().dropna()
-        
-        # 2) 누적 수익률 (%)
         df_cum_returns = (df_prices / df_prices.iloc[0] - 1) * 100
         
-        # 3) 통계 지표 사전 계산
         stats_summary = []
         for ticker in df_prices.columns:
-            # 누적 수익률
             cum_ret = df_cum_returns[ticker].iloc[-1]
-            
-            # 연율화 변동성 (Volatility): 일일 표준편차 * sqrt(252)
             daily_std = df_returns[ticker].std() if ticker in df_returns.columns else 0
             annual_vol = daily_std * np.sqrt(252) * 100
             
-            # 최대 낙폭 (Max Drawdown, MDD)
-            # 최고가 대비 현재 주가가 얼마나 빠졌는지의 최댓값
+            # MDD (최대 낙폭)
             roll_max = df_prices[ticker].cummax()
             drawdowns = (df_prices[ticker] - roll_max) / roll_max * 100
             mdd = drawdowns.min()
             
-            # 연율화 수익률 (CAGR 근사치)
+            # CAGR (연환산 수익률)
             days_held = (df_prices.index[-1] - df_prices.index[0]).days
             if days_held > 0:
                 annual_ret = (((df_prices[ticker].iloc[-1] / df_prices[ticker].iloc[0])) ** (365 / days_held) - 1) * 100
             else:
                 annual_ret = 0
             
-            # 샤프 지수 (Sharpe Ratio)
-            # (연간 수익률 - 무위험 수익률) / 연간 변동성
+            # 샤프 지수
             excess_return = annual_ret - rf_rate
             sharpe_ratio = excess_return / annual_vol if annual_vol > 0 else 0
             
@@ -193,11 +182,11 @@ if all_selected_tickers:
             
         df_stats = pd.DataFrame(stats_summary).set_index("종목명")
         
-        # 컬럼 이름 한글화 (차트 가독성용)
+        # 컬럼 이름 변경 (가독성 향상)
         df_cum_renamed = df_cum_returns.rename(columns=TICKER_TO_NAME)
         df_prices_renamed = df_prices.rename(columns=TICKER_TO_NAME)
 
-        # 6. 메인 화면 구성 - 탭 레이아웃 (모던하고 직관적인 분리)
+        # 6. 메인 화면 구성 - 탭 레이아웃
         tab_kr, tab_us, tab_compare, tab_heatmap, tab_single = st.tabs([
             "🇰🇷 한국 주식 분석", 
             "🇺🇸 미국 주식 분석", 
@@ -223,7 +212,6 @@ if all_selected_tickers:
                 fig_kr.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_kr, use_container_width=True)
                 
-                # 한국 주식 핵심 지표 테이블
                 st.write("### 📉 한국 주식 핵심 성과 지표")
                 st.dataframe(df_stats.loc[df_stats.index.isin(selected_kr)])
             else:
@@ -246,14 +234,13 @@ if all_selected_tickers:
                 fig_us.update_layout(hovermode="x unified")
                 st.plotly_chart(fig_us, use_container_width=True)
                 
-                # 미국 주식 핵심 지표 테이블
                 st.write("### 📉 미국 주식 핵심 성과 지표")
                 st.dataframe(df_stats.loc[df_stats.index.isin(selected_us)])
             else:
                 st.info("왼쪽 사이드바에서 미국 주식을 선택해 주세요.")
 
         # ----------------------------------------------------
-        # Tab 3: 한-미 통합 비교
+        # Tab 3: 한-미 통합 비교 (오류가 발생했던 곳)
         # ----------------------------------------------------
         with tab_compare:
             st.subheader("🔄 한-미 주식 통합 비교 시각화")
@@ -273,7 +260,19 @@ if all_selected_tickers:
             st.markdown("- **연간 변동성**: 주가 움직임의 위험도를 뜻하며, 높을수록 가격 변동이 심합니다.")
             st.markdown("- **샤프 지수**: 1 단위의 위험을 감수할 때 얻는 초과 수익입니다. **높을수록 우수한 자산**입니다.")
             st.markdown("- **최대 낙폭(MDD)**: 최고점 대비 최대 하락폭으로, 투자 시 겪을 수 있는 최악의 고통 지수입니다.")
-            st.dataframe(df_stats.style.background_gradient(cmap="Blues", subset=["누적 수익률 (%)", "샤프 지수 (위험대비 성과)"]))
+            
+            # 스타일 에러 방지를 위해 try-except 적용
+            try:
+                # matplotlib이 성공적으로 임포트되었을 때 그라데이션 스타일 적용
+                styled_df = df_stats.style.background_gradient(
+                    cmap="Blues", 
+                    subset=["누적 수익률 (%)", "샤프 지수 (위험대비 성과)"]
+                )
+                st.dataframe(styled_df)
+            except Exception as style_error:
+                # 스타일 적용 중 오류가 나면 일반 데이터프레임으로 안전하게 출력
+                st.warning("테이블 스타일(색상) 적용 중 오류가 발생하여 기본 형식으로 표시합니다. (requirements.txt에 matplotlib이 정상 설치되었는지 확인해 주세요)")
+                st.dataframe(df_stats)
 
         # ----------------------------------------------------
         # Tab 4: 상관관계 분석 (Heatmap)
@@ -288,7 +287,6 @@ if all_selected_tickers:
             """)
             
             if len(df_returns.columns) > 1:
-                # 상관관계 행렬 계산 및 컬럼 이름 한글화
                 df_corr = df_returns.corr()
                 df_corr_renamed = df_corr.rename(index=TICKER_TO_NAME, columns=TICKER_TO_NAME)
                 
@@ -296,7 +294,7 @@ if all_selected_tickers:
                     df_corr_renamed,
                     text_auto=".2f",
                     aspect="auto",
-                    color_continuous_scale="RdBu_r", # 빨강(양의 상관) ~ 파랑(음의 상관)
+                    color_continuous_scale="RdBu_r",
                     zmin=-1.0,
                     zmax=1.0,
                     title="종목 간 일일 수익률 상관계수 행렬"
@@ -311,21 +309,14 @@ if all_selected_tickers:
         with tab_single:
             st.subheader("🔍 개별 종목 기술적 지표 & 거래량 상세 분석")
             
-            # 분석할 하나의 종목 선택
             all_names_list = list(df_prices_renamed.columns)
             selected_single_name = st.selectbox("분석할 종목을 하나 선택하세요", options=all_names_list)
             
-            # 해당 종목의 가격 및 거래량 데이터 준비
             single_price = df_prices_renamed[selected_single_name]
-            
-            # 이동평균선(SMA) 계산
             sma_20 = single_price.rolling(window=20).mean()
             sma_60 = single_price.rolling(window=60).mean()
             
-            # 서브플롯 형태로 종가/이평선 차트와 거래량 차트 동시에 그리기
             fig_single = go.Figure()
-            
-            # 1) 주가 및 이동평균선 추가
             fig_single.add_trace(go.Scatter(x=single_price.index, y=single_price, name="종가", line=dict(color="#1F77B4", width=2)))
             fig_single.add_trace(go.Scatter(x=sma_20.index, y=sma_20, name="20일 이동평균선", line=dict(color="#FF7F0E", width=1.5, dash="dash")))
             fig_single.add_trace(go.Scatter(x=sma_60.index, y=sma_60, name="60일 이동평균선", line=dict(color="#2CA02C", width=1.5, dash="dot")))
@@ -339,9 +330,7 @@ if all_selected_tickers:
             )
             st.plotly_chart(fig_single, use_container_width=True)
             
-            # 2) 거래량 차트 그리기
             st.write("#### 일별 거래량 (Volume) 분석")
-            # 선택한 종목의 원래 영어 티커를 찾아서 거래량 데이터 매핑
             inv_ticker_map = {v: k for k, v in TICKER_TO_NAME.items()}
             actual_ticker = inv_ticker_map.get(selected_single_name, selected_single_name)
             
